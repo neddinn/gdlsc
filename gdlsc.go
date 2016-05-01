@@ -8,9 +8,6 @@ import (
 	"net/http"
 	"os/exec"
 	"strings"
-
-	"github.com/gorilla/mux"
-	_ "github.com/jinzhu/gorm/dialects/mysql"
 )
 
 // URL represents path a github repos license
@@ -60,7 +57,6 @@ func formatLink(link string) string {
 }
 
 func main() {
-	mux.NewRouter()
 	out, err := exec.Command("sh", "-c", `go list -f '{{ join .Imports "\n"}}' | grep github`).Output()
 	if err != nil {
 		log.Fatal(err)

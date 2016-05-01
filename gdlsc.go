@@ -1,60 +1,78 @@
 package main
 
 import (
-  "log"
-  "fmt"
-  "os/exec"
-  "strings"
-  "net/http"
-  "io/ioutil"
+	"encoding/json"
+	"fmt"
+	"io/ioutil"
+	"log"
+	"net/http"
+	"os/exec"
+	"strings"
+
+	"github.com/gorilla/mux"
+	_ "github.com/jinzhu/gorm/dialects/mysql"
 )
 
-var URL = "https://%s/master/LICENSE"
+// URL represents path a github repos license
+var URL = "https://api.github.com/repos/%s/license"
 
-type response struct{
-  Dep string
-  License string
-  Link string
+type message struct {
+	Dependency string
+	License    string
+	Link       string
+}
+type response struct {
+	Html_URL string
+	License  license
+}
+type license struct {
+	Name string
 }
 
-func getLicense(url string, dependency string, ch chan response) {
-  resp, err := http.Get(url)
-  if err != nil {
-      panic(err)
-  }
-  defer resp.Body.Close()
-  body, err := ioutil.ReadAll(resp.Body)
-  if err != nil {
-      panic(err)
-  }
-  license := getLicenseText(string(body))
-  ch <- response{
-    Dep: dependency,
-    License: license,
-    Link: url,
-  }
+func getLicense(url string, dependency string, ch chan message) {
+	cleanURL := formatLink(url)
+	url = fmt.Sprintf(URL, cleanURL)
+	resp, err := http.Get(url)
+	if err != nil {
+		panic(err)
+	}
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		panic(err)
+	}
+
+	cleanBody := &response{}
+	json.Unmarshal([]byte(body), &cleanBody)
+
+	ch <- message{
+		Dependency: dependency,
+		License:    cleanBody.License.Name,
+		Link:       cleanBody.Html_URL,
+	}
 }
 
-func getLicenseText(data string) string {
-  whole := strings.Split(data, "\n")
-  return whole[0]
+// formatLink returns just the repo name and owner in the format ":owner/:repo"
+func formatLink(link string) string {
+	strippedURL := strings.Split(link, "/")
+	cleanURL := strings.Join(strippedURL[1:3], "/")
+	return cleanURL
 }
 
 func main() {
-  out, err := exec.Command("sh", "-c", `go list -f '{{ join .Imports "\n"}}' | grep github`).Output()
-  if err != nil {
-    log.Fatal(err)
-  }
-  deps := strings.Split(string(out), "\n")
-  ch := make(chan response, len(deps)- 1)
-  rawDeps :=  deps[:len(deps)-1]
-  for _, rawDep := range rawDeps {
-    dep := strings.Replace(rawDep, "github.com", "raw.githubusercontent.com", 1)
-    dep = fmt.Sprintf(URL, dep)
-    go getLicense(dep, rawDep, ch)
-  }
-  for i := 0; i < len(rawDeps); i++  {
-    result := <- ch
-    fmt.Printf("%v ===>: %v\n", result.Dep, result.License)
-  }
+	mux.NewRouter()
+	out, err := exec.Command("sh", "-c", `go list -f '{{ join .Imports "\n"}}' | grep github`).Output()
+	if err != nil {
+		log.Fatal(err)
+	}
+	deps := strings.Split(string(out), "\n")
+	rawDeps := deps[:len(deps)-1]
+	ch := make(chan message, len(rawDeps)-1)
+	for _, rawDep := range rawDeps {
+		go getLicense(rawDep, rawDep, ch)
+	}
+	for i := 0; i < len(rawDeps); i++ {
+		result := <-ch
+		fmt.Printf("%v ===>: %v (%v)\n", result.Dependency, result.License, result.Link)
+	}
 }

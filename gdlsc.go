@@ -40,12 +40,21 @@ func getLicense(url string, dependency string, ch chan message) {
 	}
 
 	cleanBody := &response{}
-	json.Unmarshal([]byte(body), &cleanBody)
+
+	if err := json.Unmarshal([]byte(body), &cleanBody); err!= nil {
+		panic(err)
+	}
+
+	link := cleanBody.Html_URL
+	license := cleanBody.License.Name
+	if link == "" {
+		link = "Not Found"
+	}
 
 	ch <- message{
 		Dependency: dependency,
-		License:    cleanBody.License.Name,
-		Link:       cleanBody.Html_URL,
+		License:    license,
+		Link:       link,
 	}
 }
 
@@ -57,7 +66,7 @@ func formatLink(link string) string {
 }
 
 func main() {
-	out, err := exec.Command("sh", "-c", `go list -f '{{ join .Imports "\n"}}' | grep github`).Output()
+	out, err := exec.Command("sh", "-c", `go list -f '{{ join .Imports "\n"}}' ./... | grep github`).Output()
 	if err != nil {
 		log.Fatal(err)
 	}

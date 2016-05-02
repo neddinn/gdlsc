@@ -6,12 +6,13 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 )
 
 // URL represents path a github repos license
-var URL = "https://api.github.com/repos/%s/license"
+var URL = "https://api.github.com/repos/%s/license?access_token=" + os.Getenv("ACCESS_TOKEN")
 
 //types for message to be printed
 type message struct {

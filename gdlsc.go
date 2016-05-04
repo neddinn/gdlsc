@@ -88,7 +88,8 @@ func main() {
 		fmt.Printf("%v =======> %v\n", out.File, out.License)
 	}
 
-	for i := range noLicense {
-		fmt.Printf("Packages without a License file: %v\n", i)
+	for key := range noLicense {
+		key = strings.Replace(key, root, "", 1)
+		fmt.Printf("Packages without a License file: %v\n", key)
 	}
 }

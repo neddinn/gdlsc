@@ -27,6 +27,10 @@ func getLicense(input chan string, output chan response) {
 		}
 	}
 }
+func scan(path string) bool {
+	path = strings.ToUpper(path)
+	return strings.Contains(path, "LICENSE") || strings.Contains(path, "COPYING")
+}
 
 func main() {
 	root := "vendor/"
@@ -46,7 +50,7 @@ func main() {
 		if !f.IsDir() {
 			splitPath := strings.Split(path, "/")
 			rawPath := splitPath[len(splitPath)-1]
-			if strings.Contains(strings.ToUpper(rawPath), "LICENSE") {
+			if scan(rawPath) {
 				files = append(files, path)
 			}
 		}

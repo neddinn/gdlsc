@@ -6,6 +6,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"sort"
@@ -51,18 +52,41 @@ func formatLicense(file string, size int) string {
 	return formatted
 }
 
+func isWtf(file string) bool {
+	match := "everyone is permitted to copy and distribute"
+	f, err := ioutil.ReadFile(file)
+	if err != nil {
+		return false
+	}
+	license := string(f)
+	rawText := strings.ToLower(license)
+	text := regexp.MustCompile("\\s{2,}").ReplaceAllLiteralString(rawText, " ")
+	return strings.Contains(text, match)
+}
+
+func checkLicenseType(file string) (string, error) {
+	l, err := license.NewFromFile(file)
+	if err != nil {
+		if isWtf(file) {
+			return "WTFPL-2.0", nil
+		}
+		return "", err
+	}
+	return l.Type, nil
+}
+
 func getLicense(input chan request, output chan response, size int) {
 	for i := range input {
 		file := strings.TrimPrefix(i.Path, root)
 		if i.LicenseFile == "" {
 			output <- response{File: file, License: "FILE HAS NO LICENSE"}
 		} else {
-			l, err := license.NewFromFile(i.LicenseFile)
+			l, err := checkLicenseType(i.LicenseFile)
 			if err != nil {
 				data := formatLicense(i.LicenseFile, size)
 				output <- response{File: file, License: data}
 			} else {
-				output <- response{File: file, License: l.Type}
+				output <- response{File: file, License: l}
 			}
 		}
 	}

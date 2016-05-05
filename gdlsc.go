@@ -1,15 +1,15 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
 	"io/ioutil"
 	"os"
 	"path"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"text/tabwriter"
+
+	"sort"
+	"strconv"
 
 	"github.com/ryanuber/go-license"
 )
@@ -22,29 +22,45 @@ type response struct {
 	File    string
 }
 
-type request struct {
-	path        string
-	licenseFile string
+// ByName type is used to implement sort interface to sort response by name
+type ByName []response
+
+func (s ByName) Len() int           { return len(s) }
+func (s ByName) Less(i, j int) bool { return s[i].File < s[j].File }
+func (s ByName) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
+
+func (r response) String() string {
+	return r.File + " ------- > " + r.License + "\n"
 }
 
-func catch(err error) {
+type request struct {
+	Path        string
+	LicenseFile string
+}
+
+func formatLicense(file string, size int) string {
+	f, err := ioutil.ReadFile(file)
 	if err != nil {
 		panic(err)
 	}
+	data := strings.Split(string(f), "\n")
+	if size <= len(data) {
+		data = data[0:size]
+	}
+	formatted := "UNKOWN LICENSE\n\n|\t" + strings.Join(data, "\n|\t") + "\n"
+	return formatted
 }
+
 func getLicense(input chan request, output chan response, size int) {
 	for i := range input {
-		file := strings.TrimPrefix(i.path, root)
-		if i.licenseFile == "" {
+		file := strings.TrimPrefix(i.Path, root)
+		if i.LicenseFile == "" {
 			output <- response{File: file, License: "FILE HAS NO LICENSE"}
 		} else {
-			l, err := license.NewFromFile(i.licenseFile)
+			l, err := license.NewFromFile(i.LicenseFile)
 			if err != nil {
-				f, err := os.Open(i.licenseFile)
-				catch(err)
-				dat, err := bufio.NewReader(f).Peek(size)
-				catch(err)
-				output <- response{File: file, License: "#" + string(dat)}
+				data := formatLicense(i.LicenseFile, size)
+				output <- response{File: file, License: data}
 			} else {
 				output <- response{File: file, License: l.Type}
 			}
@@ -109,7 +125,7 @@ func main() {
 
 	packageFiles := getPackageLicenses()
 
-	size := 100
+	size := 5
 	if len(os.Args) > 1 {
 		size, _ = strconv.Atoi(os.Args[1])
 	}
@@ -117,26 +133,26 @@ func main() {
 		go getLicense(input, output, size)
 	}
 
-	if len(packageFiles) == 0 { // checks that a license file was gotten
+	if len(packageFiles) == 0 {
 		return
 	}
 
 	go func() {
 		for k, v := range packageFiles {
 			input <- request{
-				path:        k,
-				licenseFile: v,
+				Path:        k,
+				LicenseFile: v,
 			}
 		}
 	}()
-	w := tabwriter.NewWriter(os.Stdout, 1, 4, 2, ' ', 0)
+	var out []response
 	for i := 0; i < len(packageFiles); i++ {
-		out := <-output
-		_, err := w.Write([]byte(out.File + "\t" + out.License + "\n"))
-		if err != nil {
-			panic(err)
-		}
+		out = append(out, <-output)
 	}
-	w.Flush()
+
+	sort.Sort(ByName(out))
+	for _, v := range out {
+		fmt.Println(v)
+	}
 
 }

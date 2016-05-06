@@ -4,40 +4,20 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
-	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
 
-	"sort"
 	"strconv"
+
+	"path"
+
+	"sort"
 
 	"github.com/ryanuber/go-license"
 )
 
 const root = "vendor/"
-
-// Response contains license and file info
-type response struct {
-	License string
-	File    string
-}
-
-// ByName type is used to implement sort interface to sort response by name
-type ByName []response
-
-func (s ByName) Len() int           { return len(s) }
-func (s ByName) Less(i, j int) bool { return s[i].File < s[j].File }
-func (s ByName) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
-
-func (r response) String() string {
-	return r.File + " ------- > " + r.License + "\n"
-}
-
-type request struct {
-	Path        string
-	LicenseFile string
-}
 
 func formatLicense(file string, size int) string {
 	f, err := ioutil.ReadFile(file)
@@ -53,7 +33,8 @@ func formatLicense(file string, size int) string {
 }
 
 func isWtf(file string) bool {
-	match := "everyone is permitted to copy and distribute"
+	match := "do what the fuck you want to public license version 2"
+
 	f, err := ioutil.ReadFile(file)
 	if err != nil {
 		return false
@@ -75,108 +56,123 @@ func checkLicenseType(file string) (string, error) {
 	return l.Type, nil
 }
 
-func getLicense(input chan request, output chan response, size int) {
-	for i := range input {
-		file := strings.TrimPrefix(i.Path, root)
-		if i.LicenseFile == "" {
-			output <- response{File: file, License: "FILE HAS NO LICENSE"}
-		} else {
-			l, err := checkLicenseType(i.LicenseFile)
-			if err != nil {
-				data := formatLicense(i.LicenseFile, size)
-				output <- response{File: file, License: data}
-			} else {
-				output <- response{File: file, License: l}
-			}
-		}
-	}
-}
-
-func isLicense(fileName string) bool {
-	fileName = strings.ToUpper(fileName)
-	return strings.Contains(fileName, "LICENSE") || strings.Contains(fileName, "COPYING")
-}
-
-func isPackage(filePath string) bool {
-	files, err := ioutil.ReadDir(filePath)
+func getLicenseType(file string, size int) string {
+	l, err := checkLicenseType(file)
 	if err != nil {
-		return false
+		return formatLicense(file, size)
 	}
-	for _, file := range files {
-		if file.Name() == ".git" {
+	return l
+}
+
+func walkPath(root string) []string {
+	var contents []string
+	filepath.Walk(root, func(path string, f os.FileInfo, err error) error {
+		if err != nil {
+			fmt.Println(err)
+			return err
+		}
+		if strings.Contains(path, ".git") { //ignore git folders
+			return nil
+		}
+		if f.IsDir() {
+			contents = append(contents, path)
+		}
+		return nil
+	})
+	return contents
+}
+
+func isPackage(folder string) bool {
+	files, err := ioutil.ReadDir(folder)
+	if err != nil {
+		panic(err)
+	}
+	for _, v := range files {
+		if strings.HasSuffix(v.Name(), ".go") {
 			return true
 		}
 	}
 	return false
 }
 
-func getLicenseFile(filePath string) string {
-	files, err := ioutil.ReadDir(filePath)
+func checkLicense(folder string) string {
+	files, err := ioutil.ReadDir(folder)
 	if err != nil {
-		return ""
+		panic(err)
 	}
-	for _, file := range files {
-		if isLicense(file.Name()) {
-			return path.Join(filePath, file.Name())
+	for _, v := range files {
+		file := strings.ToUpper(v.Name())
+		if (v.Mode().IsRegular()) && (strings.Contains(file, "LICENSE") || strings.Contains(file, "COPYING")) {
+			return path.Join(folder, v.Name())
 		}
 	}
 	return ""
 }
+func hasLicense(folder string) bool {
+	if checkLicense(folder) == "" {
+		return false
+	}
+	return true
+}
 
-func getPackageLicenses() map[string]string {
-	var licenseInfo = map[string]string{}
+func filter(folders []string) []string {
+	var filtered []string
+	for _, v := range folders {
+		if isPackage(v) || hasLicense(v) {
+			filtered = append(filtered, v)
+		}
+	}
+	return filtered
+}
 
-	filepath.Walk(root, func(filePath string, f os.FileInfo, err error) error {
-		if err != nil {
-			fmt.Println("No vendor folder found. Aborting..")
-			return err
+func generateOutput(folders []string, size int) string {
+	// Walk dir printing the Packages and keepijng track of the root
+	// If license is found, store the license
+	// If another license is found, print the stored license and store the new one
+	// If root path changes, print the stored license if it exists otherwise "No license" and reset license
+	// var root string
+	// var license string
+	var noLicenseError = "No License Found"
+	var dirRoot, output string
+	license := noLicenseError
+	for _, v := range folders {
+
+		if dirRoot == "" {
+			dirRoot = v
+		} else if !strings.Contains(v, dirRoot) {
+			output += "\t" + license + "\n"
+			dirRoot = v
+			license = noLicenseError
 		}
 
-		if isPackage(filePath) {
-			licenseInfo[filePath] = getLicenseFile(filePath)
-		} else if isLicense(filePath) && f.Mode().IsRegular() {
-			licenseInfo[path.Dir(filePath)] = filePath
+		if licenseFile := checkLicense(v); licenseFile != "" {
+			if license != noLicenseError {
+				output += "\t" + license + "\n"
+			}
+			license = getLicenseType(licenseFile, size)
 		}
 
-		return nil
-	})
-	return licenseInfo
+		output += strings.TrimPrefix(v, root) + "\n"
+	}
+	output += "\t" + license
+	return output
 }
 
 func main() {
-	input := make(chan request)
-	output := make(chan response)
-
-	packageFiles := getPackageLicenses()
-
 	size := 5
 	if len(os.Args) > 1 {
 		size, _ = strconv.Atoi(os.Args[1])
 	}
-	for a := 0; a < 5; a++ {
-		go getLicense(input, output, size)
-	}
 
-	if len(packageFiles) == 0 {
+	files := walkPath(root)
+	if len(files) == 0 {
+		fmt.Println("Vendor Folder not found. Aborting..")
 		return
 	}
+	filtered := filter(files)
+	sort.Strings(filtered)
 
-	go func() {
-		for k, v := range packageFiles {
-			input <- request{
-				Path:        k,
-				LicenseFile: v,
-			}
-		}
-	}()
-	var out []response
-	for i := 0; i < len(packageFiles); i++ {
-		out = append(out, <-output)
-	}
-
-	sort.Sort(ByName(out))
-	for _, v := range out {
-		fmt.Println(v)
-	}
+	output := generateOutput(filtered, size)
+	fmt.Println(output)
 
 }

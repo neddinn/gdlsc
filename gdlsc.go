@@ -1,9 +1,7 @@
 package main
 
 import (
-
 	"path"
-	//"github.com/ryanuber/go-license"
 	"io/ioutil"
 	"strings"
 	"os"
@@ -12,62 +10,26 @@ import (
 
 const vendorDir = "vendor"
 
+// node describes a directory in the vendor tree
 type node struct {
+	prefix string
 	name string
 	golang bool
 	licenseTxt string
-	licenseTree bool
-	parent *node
 	children []*node
 	reduced bool
 }
 
-func (n *node) reduce() int {
-	reduced := 0
-	newChildren := make([]*node, 0, len(n.children))
-
-	for i := 0; i < len(n.children); i++ {
-		child := n.children[i]
-		if len(child.children) == 0 && n.licenseTree == child.licenseTree {
-			n.reduced = true
-			reduced += 1
-		} else {
-			newChildren = append(newChildren, child)
-			reduced += child.reduce()
-		}
-
-	}
-
-	n.children = newChildren
-	return reduced
+// holder allows to append while keeping a reference to the slice
+type holder struct {
+	nodes []*node
 }
 
-func (n *node) generate(prefix string) []string {
-	out := make([]string, 0)
-	r := ""
-	if n.reduced {
-		r = "/..."
-	}
-	if n.golang || n.licenseTree {
-		out = append(out, fmt.Sprintf("%v/%v%v [go:%v, lic:%v]", prefix, n.name, r, n.golang, n.licenseTree))
-	}
-	if n.licenseTxt != "" {
-		lines := strings.Split(n.licenseTxt, "\n")
-		for i := 0; i < 5; i++ {
-			out = append(out, fmt.Sprintf("| %v", lines[i]))
-		}
-	}
-	for _, child := range n.children {
-		out = append(out, child.generate(path.Join(prefix, n.name))...)
-	}
+// makeTree parses the vendor tree
+func makeTree(p string) *node {
+	n := &node{ prefix: path.Dir(p), name: path.Base(p), children: make([]*node, 0) }
 
-	return out
-}
-
-func buildNode(prefix string, parent *node, licenseTree bool) *node {
-	n := &node{ name: path.Base(prefix), parent: parent, licenseTree: licenseTree, children: make([]*node, 0) }
-
-	files, err := ioutil.ReadDir(prefix)
+	files, err := ioutil.ReadDir(p)
 	if err != nil {
 		panic(err);
 	}
@@ -76,26 +38,113 @@ func buildNode(prefix string, parent *node, licenseTree bool) *node {
 		if (file.Mode().IsRegular()) {
 			if strings.HasSuffix(file.Name(), ".go") {
 				n.golang = true
-			}
-			if (file.Name() == "LICENSE" || file.Name() == "COPYING" || file.Name() == "LICENSE.txt") {
-				license, err := ioutil.ReadFile(path.Join(prefix, file.Name()))
+			} else if (isLicenseFileName(file.Name())) {
+				license, err := ioutil.ReadFile(path.Join(p, file.Name()))
 				if err != nil {
 					panic(err)
 				}
 				n.licenseTxt = string(license)
-				n.licenseTree = true
 			}
-		} else if (file.Mode().IsDir() && !strings.HasPrefix(file.Name(), ".")) {
+		} else if (file.Mode().IsDir() && !strings.HasPrefix(file.Name(), ".") && file.Name() != "ConnectCorp") {
 			n.children = append(n.children,
-				buildNode(path.Join(prefix, file.Name()), n, licenseTree || n.licenseTree))
+				makeTree(path.Join(p, file.Name())))
 		}
 	}
 
 	return n
 }
 
+// extract takes out some of the minimal licensed subtrees
+func (n *node) extract(h *holder) bool {
+	extracted := false
+	newChildren := make([]*node, 0, len(n.children))
+
+	for i := 0; i < len(n.children); i++ {
+		child := n.children[i]
+		license := findLicense(child.children)
+		if child.licenseTxt != "" && !license {
+			child.reduced = true
+			child.children = []*node{}
+			h.nodes = append(h.nodes, child)
+			extracted = true
+		} else {
+			newChildren = append(newChildren, child)
+			if child.extract(h) {
+				extracted = true
+			}
+		}
+	}
+
+	n.children = newChildren
+	return extracted
+}
+
+func (n *node) reduce() bool {
+	reduced := false
+
+	for i := 0; i < len(n.children); i++ {
+		child := n.children[i]
+		if !n.golang && child.golang && len(child.children) > 0 {
+			child.reduced = true
+			child.children = []*node{}
+			reduced = true
+		} else {
+			if child.reduce() {
+				reduced = true
+			}
+		}
+	}
+
+	return reduced
+}
+
+// format the given tree for output
+func (n *node) format() []string {
+	r := ""
+	if n.reduced {
+		r = "/..."
+	}
+
+	out := make([]string, 0)
+	if n.golang || n.licenseTxt != "" {
+		out = append(out, fmt.Sprintf("%v/%v%v [go:%v,lic:%v]", n.prefix, n.name, r, n.golang, n.licenseTxt != ""))
+	}
+	for _, child := range n.children {
+		out = append(out, child.format()...)
+	}
+	return out
+}
+
+func isLicenseFileName(name string) bool {
+	name = strings.ToUpper(name)
+	return strings.Contains(name, "LICENSE") || strings.Contains(name, "COPYING")
+}
+
+// finds a license in a forest
+func findLicense(nodes []*node) bool {
+	for i := 0; i < len(nodes); i++ {
+		if nodes[i].licenseTxt != "" {
+			return true
+		}
+		if findLicense(nodes[i].children) {
+			return true
+		}
+	}
+	return false
+}
+
 func main() {
-	n := buildNode(path.Join(os.Args[1], vendorDir), nil, false)
-	for (n.reduce() > 0) {}
-	fmt.Println(strings.Join(n.generate(""), "\n"))
+	n := makeTree(path.Join(os.Args[1], vendorDir))
+	h := &holder{nodes: make([]*node, 0)}
+
+	for (n.extract(h)) {}
+	for (n.reduce()) {}
+
+	fmt.Println("LICENSED")
+	for _, e := range h.nodes {
+		fmt.Println(strings.Join(e.format(), "\n"))
+	}
+
+	fmt.Println("UNLICENSED")
+	fmt.Println(strings.Join(n.format(), "\n"))
 }

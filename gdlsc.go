@@ -13,24 +13,24 @@ import (
 
 const vendorDir = "vendor"
 
-// Node describes a directory in the vendor tree
-type Node struct {
+// node describes a directory in the vendor tree
+type node struct {
 	prefix     string
 	name       string
 	golang     bool
 	licenseTxt string
-	children   []*Node
+	children   []*node
 	reduced    bool
 }
 
-// Holder allows to append while keeping a reference to the slice
-type Holder struct {
-	nodes []*Node
+// holder allows to append while keeping a reference to the slice
+type holder struct {
+	nodes []*node
 }
 
-// MakeTree parses the vendor tree
-func MakeTree(p string) *Node {
-	n := &Node{prefix: path.Dir(p), name: path.Base(p), children: make([]*Node, 0)}
+// makeTree parses the vendor tree
+func makeTree(p string) *node {
+	n := &node{prefix: path.Dir(p), name: path.Base(p), children: make([]*node, 0)}
 
 	files, err := ioutil.ReadDir(p)
 	if err != nil {
@@ -50,7 +50,7 @@ func MakeTree(p string) *Node {
 			}
 		} else if file.Mode().IsDir() && !strings.HasPrefix(file.Name(), ".") && file.Name() != "ConnectCorp" {
 			n.children = append(n.children,
-				MakeTree(path.Join(p, file.Name())))
+				makeTree(path.Join(p, file.Name())))
 		}
 	}
 
@@ -58,21 +58,21 @@ func MakeTree(p string) *Node {
 }
 
 // Extract takes out some of the minimal licensed subtrees
-func (n *Node) Extract(h *Holder) bool {
+func (n *node) extract(h *holder) bool {
 	extracted := false
-	newChildren := make([]*Node, 0, len(n.children))
+	newChildren := make([]*node, 0, len(n.children))
 
 	for i := 0; i < len(n.children); i++ {
 		child := n.children[i]
 		license := findLicense(child.children)
 		if child.licenseTxt != "" && !license {
 			child.reduced = true
-			child.children = []*Node{}
+			child.children = []*node{}
 			h.nodes = append(h.nodes, child)
 			extracted = true
 		} else {
 			newChildren = append(newChildren, child)
-			if child.Extract(h) {
+			if child.extract(h) {
 				extracted = true
 			}
 		}
@@ -83,7 +83,7 @@ func (n *Node) Extract(h *Holder) bool {
 }
 
 // AttachLicenseType finds the appropriate licence types and attaches it
-func (n *Holder) AttachLicenseType() {
+func (n *holder) attachLicenseType() {
 	for i := 0; i < len(n.nodes); i++ {
 		child := n.nodes[i]
 		if child.licenseTxt != "" {
@@ -92,14 +92,14 @@ func (n *Holder) AttachLicenseType() {
 	}
 }
 
-func (n *Node) reduce() bool {
+func (n *node) reduce() bool {
 	reduced := false
 
 	for i := 0; i < len(n.children); i++ {
 		child := n.children[i]
 		if !n.golang && child.golang && len(child.children) > 0 {
 			child.reduced = true
-			child.children = []*Node{}
+			child.children = []*node{}
 			reduced = true
 		} else {
 			if child.reduce() {
@@ -112,14 +112,17 @@ func (n *Node) reduce() bool {
 }
 
 // format the given tree for output
-func (n *Node) format() []string {
+func (n *node) format() []string {
 	r := ""
+	if n.reduced {
+		r = "/..."
+	}
 	if n.licenseTxt != "" {
-		r = "======>"
+		r += " ======>"
 	}
 	out := make([]string, 0)
 	if n.golang || n.licenseTxt != "" {
-		out = append(out, fmt.Sprintf("%v/%v %v %v", n.prefix, n.name, r, n.licenseTxt))
+		out = append(out, fmt.Sprintf("%v/%v%v %v", n.prefix, n.name, r, n.licenseTxt))
 	}
 	for _, child := range n.children {
 		out = append(out, child.format()...)
@@ -162,7 +165,7 @@ func getLicenseType(text string) string {
 }
 
 // finds a license in a forest
-func findLicense(nodes []*Node) bool {
+func findLicense(nodes []*node) bool {
 	for i := 0; i < len(nodes); i++ {
 		if nodes[i].licenseTxt != "" {
 			return true
@@ -175,12 +178,12 @@ func findLicense(nodes []*Node) bool {
 }
 
 func main() {
-	n := MakeTree(path.Join(os.Args[1], vendorDir))
-	h := &Holder{nodes: make([]*Node, 0)}
+	n := makeTree(path.Join(os.Args[1], vendorDir))
+	h := &holder{nodes: make([]*node, 0)}
 
-	for n.Extract(h) {
+	for n.extract(h) {
 	}
-	h.AttachLicenseType()
+	h.attachLicenseType()
 	for n.reduce() {
 	}
 

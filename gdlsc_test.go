@@ -3,90 +3,114 @@ package main
 import (
 	"path"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
-var package1 = &Node{
+var package1 = &node{
 	"gdlsc_test",
 	"package1",
 	false,
 	"The MIT License (MIT)",
-	[]*Node{},
+	[]*node{},
 	false,
 }
-var package2 = &Node{
+var package2 = &node{
 	"gdlsc_test",
 	"package2",
 	true,
 	"",
-	[]*Node{},
+	[]*node{},
+	false,
+}
+var package3 = &node{
+	"gdlsc_test",
+	"package3",
+	false,
+	"Apache license version 2.0, January 2004",
+	[]*node{package4},
+	false,
+}
+var package4 = &node{
+	"gdlsc_test/package3",
+	"package4",
+	false,
+	"eclipse public license - v 1.0",
+	[]*node{},
 	false,
 }
 
-var topDir = &Node{
+var topDir = &node{
 	".",
 	"gdlsc_test",
 	false,
 	"",
-	[]*Node{package1, package2},
+	[]*node{package1, package2, package3},
 	false,
 }
 
-func (n *Node) equal(o *Node) bool {
-	if (n.name != o.name) || (n.prefix != o.prefix) || (n.golang != o.golang) || (n.licenseTxt != o.licenseTxt) || (n.reduced != o.reduced) {
-		return false
-	}
-	if len(n.children) != len(o.children) {
-		return false
-	}
-	return true
-}
-
 func TestMakeTree(t *testing.T) {
-	n := MakeTree(path.Join("gdlsc_test/"))
-	if n == nil {
-		t.Fail()
-	}
-	if !n.equal(topDir) {
-		t.Fail()
-	}
-	child1 := n.children[0]
-	if !child1.equal(package1) {
-		t.Fail()
-	}
-	child2 := n.children[1]
-	if !child2.equal(package2) {
-		t.Fail()
+	assert := assert.New(t)
+	n := makeTree(path.Join("gdlsc_test/"))
+	if assert.NotNil(n, "Should not be Nil") {
+		assert.Equal(n, topDir, " Should be euqal")
+		assert.Equal(n.children[0], package1, " Should be euqal")
+		assert.Equal(n.children[1], package2, " Should be euqal")
+		assert.Equal(n.children[2], package3, " Should be euqal")
 	}
 }
 
 func TestExtract(t *testing.T) {
-	n := MakeTree(path.Join("gdlsc_test/"))
-	h := &Holder{nodes: make([]*Node, 0)}
-	if !n.Extract(h) {
-		t.Fail()
+	assert := assert.New(t)
+	n := makeTree(path.Join("gdlsc_test/"))
+	h := &holder{nodes: make([]*node, 0)}
+	for n.extract(h) {
 	}
-	if h == nil {
-		t.Fail()
-	}
-	if len(n.children) == 2 {
-		t.Fail()
-	}
-	child1 := n.children[0]
-	if !child1.equal(package2) {
-		t.Fail()
-	}
-	node := h.nodes[0]
-	if package1.reduced = true; !node.equal(package1) {
-		t.Fail()
-	}
+	assert.NotNil(h, "Should not be nil")
+	assert.NotEqual(len(n.children), 3, "Lenght of n.children should reduce after extracting")
+	assert.Equal(n.children[0], package2, "Should Be Equal")
+	package1.reduced = true
+	assert.Equal(len(h.nodes), 3, "Should be Equal")
+	assert.Equal(h.nodes[0], package1, "Should Be Equal")
 }
 
 func TestAttachLicenceFile(t *testing.T) {
-	n := MakeTree(path.Join("gdlsc_test/"))
-	h := &Holder{nodes: make([]*Node, 0)}
-	n.Extract(h)
-	h.AttachLicenseType()
-	if node := h.nodes[0]; node.licenseTxt == "The MIT License (MIT)" {
-		t.Fail()
+	n := makeTree(path.Join("gdlsc_test/"))
+	h := &holder{nodes: make([]*node, 0)}
+	n.extract(h)
+	h.attachLicenseType()
+	node := h.nodes[0]
+	assert.NotEqual(t, node.licenseTxt, "The MIT License (MIT)", "License text should change to license type")
+}
+
+func TestReduce(t *testing.T) {
+	package6 := &node{
+		"gdlsc_test",
+		"package6",
+		true,
+		"",
+		[]*node{},
+		false,
 	}
+	package5 := &node{
+		"gdlsc_test",
+		"package5",
+		true,
+		"",
+		[]*node{package6},
+		false,
+	}
+	n := makeTree(path.Join("gdlsc_test/"))
+	n.children = append(n.children, package5)
+	for n.reduce() {
+	}
+	subChild := n.children[3]
+	assert.Empty(t, subChild.children, "Should be expty")
+	assert.True(t, subChild.reduced, "Should be reduced")
+}
+
+func TestGetLicenseType(t *testing.T) {
+	licenseType := getLicenseType(package3.licenseTxt)
+	assert.NotNil(t, licenseType, "Should not be nil")
+	assert.Equal(t, licenseType, "Apache-2.0", "Should get the correct license type")
 }

@@ -1,0 +1,4 @@
+package: github.com/andela-ssunday/gdlsc
+import:
+- package: github.com/ryanuber/go-license
+- package: github.com/davecgh/go-spew

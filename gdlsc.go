@@ -1,104 +1,197 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"io/ioutil"
-	"log"
-	"net/http"
 	"os"
-	"os/exec"
+	"path"
+	"regexp"
 	"strings"
+
+	"github.com/ryanuber/go-license"
 )
 
-// URL represents path a github repos license
-var URL = "https://api.github.com/repos/%s/license?access_token=" + os.Getenv("ACCESS_TOKEN")
+const vendorDir = "vendor"
 
-//types for message to be printed
-type message struct {
-	Dependency string
-	License    string
-	Link       string
+// node describes a directory in the vendor tree
+type node struct {
+	prefix     string
+	name       string
+	golang     bool
+	licenseTxt string
+	children   []*node
+	reduced    bool
 }
 
-// options for response from github
-type response struct {
-	Html_URL string
-	License  license
+// holder allows to append while keeping a reference to the slice
+type holder struct {
+	nodes []*node
 }
 
-type license struct {
-	Name string
-}
+// makeTree parses the vendor tree
+func makeTree(p string) *node {
+	n := &node{prefix: path.Dir(p), name: path.Base(p), children: make([]*node, 0)}
 
-// uses github api to fetch license based on link generated
-func getLicense(dependency string, ch chan message) {
-	url := formatLink(dependency)
-	resp, err := http.Get(url)
+	files, err := ioutil.ReadDir(p)
 	if err != nil {
 		panic(err)
 	}
 
-	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		panic(err)
+	for _, file := range files {
+		if file.Mode().IsRegular() {
+			if strings.HasSuffix(file.Name(), ".go") {
+				n.golang = true
+			} else if isLicenseFileName(file.Name()) {
+				license, err := ioutil.ReadFile(path.Join(p, file.Name()))
+				if err != nil {
+					panic(err)
+				}
+				n.licenseTxt = string(license)
+			}
+		} else if file.Mode().IsDir() && !strings.HasPrefix(file.Name(), ".") && file.Name() != "ConnectCorp" {
+			n.children = append(n.children,
+				makeTree(path.Join(p, file.Name())))
+		}
 	}
 
-	cleanBody := &response{}
-	if err := json.Unmarshal([]byte(body), &cleanBody); err != nil {
-		panic(err)
+	return n
+}
+
+// Extract takes out some of the minimal licensed subtrees
+func (n *node) extract(h *holder) bool {
+	extracted := false
+	newChildren := make([]*node, 0, len(n.children))
+
+	for i := 0; i < len(n.children); i++ {
+		child := n.children[i]
+		license := findLicense(child.children)
+		if child.licenseTxt != "" && !license {
+			child.reduced = true
+			child.children = []*node{}
+			h.nodes = append(h.nodes, child)
+			extracted = true
+		} else {
+			newChildren = append(newChildren, child)
+			if child.extract(h) {
+				extracted = true
+			}
+		}
 	}
 
-	link := cleanBody.Html_URL
-	license := cleanBody.License.Name
-	if link == "" {
-		link = "Not Found"
-	}
+	n.children = newChildren
+	return extracted
+}
 
-	ch <- message{
-		Dependency: dependency,
-		License:    license,
-		Link:       link,
+// AttachLicenseType finds the appropriate licence types and attaches it
+func (n *holder) attachLicenseType() {
+	for i := 0; i < len(n.nodes); i++ {
+		child := n.nodes[i]
+		if child.licenseTxt != "" {
+			child.licenseTxt = getLicenseType(child.licenseTxt)
+		}
 	}
 }
 
-// get just the owner and repo and generate github license link
-func formatLink(link string) string {
-	strippedURL := strings.Split(link, "/")
-	authorAndRepo := strings.Join(strippedURL[1:3], "/")
-	licenseURL := fmt.Sprintf(URL, authorAndRepo)
-	return licenseURL
+func (n *node) reduce() bool {
+	reduced := false
+
+	for i := 0; i < len(n.children); i++ {
+		child := n.children[i]
+		if !n.golang && child.golang && len(child.children) > 0 {
+			child.reduced = true
+			child.children = []*node{}
+			reduced = true
+		} else {
+			if child.reduce() {
+				reduced = true
+			}
+		}
+	}
+
+	return reduced
 }
 
-// removes duplicate links
-func removeDuplicates(links []string) []string {
-	linksMap := make(map[string]int)
-	for _, link := range links {
-		linksMap[link] = 1
+// format the given tree for output
+func (n *node) format() []string {
+	r := ""
+	if n.reduced {
+		r = "/..."
 	}
-	linksSlice := make([]string, 0, len(linksMap))
-	for link := range linksMap {
-		linksSlice = append(linksSlice, link)
+	if n.licenseTxt != "" {
+		r += " ======>"
 	}
-	return linksSlice
+	out := make([]string, 0)
+	if n.golang || n.licenseTxt != "" {
+		out = append(out, fmt.Sprintf("%v/%v%v %v", n.prefix, n.name, r, n.licenseTxt))
+	}
+	for _, child := range n.children {
+		out = append(out, child.format()...)
+	}
+	return out
+}
+
+func isLicenseFileName(name string) bool {
+	name = strings.ToUpper(name)
+	return strings.Contains(name, "LICENSE") || strings.Contains(name, "COPYING")
+}
+
+func isWtfLicense(text string) bool {
+	match := "do what the fuck you want to public license version 2"
+	rawText := strings.ToLower(text)
+	formattedText := regexp.MustCompile("\\s{2,}").ReplaceAllLiteralString(rawText, " ")
+	return strings.Contains(formattedText, match)
+}
+
+func formatLicenseText(text string) string {
+	data := strings.Split(text, "\n")
+	if len(data) >= 10 {
+		data = data[0:10]
+	}
+	formatted := "UNKOWN LICENSE\n|\t" + strings.Join(data, "\n|\t") + "\n"
+	return formatted
+}
+
+func getLicenseType(text string) string {
+	l := new(license.License)
+	l.Text = text
+	if err := l.GuessType(); err != nil {
+		if isWtfLicense(text) {
+			return "WTFPL-2.0"
+		}
+		return formatLicenseText(text)
+	}
+
+	return l.Type
+}
+
+// finds a license in a forest
+func findLicense(nodes []*node) bool {
+	for i := 0; i < len(nodes); i++ {
+		if nodes[i].licenseTxt != "" {
+			return true
+		}
+		if findLicense(nodes[i].children) {
+			return true
+		}
+	}
+	return false
 }
 
 func main() {
-	out, err := exec.Command("sh", "-c", `go list -f '{{ join .Imports "\n"}}' ./... | grep github`).Output()
-	if err != nil {
-		log.Fatal(err)
+	n := makeTree(path.Join(os.Args[1], vendorDir))
+	h := &holder{nodes: make([]*node, 0)}
+
+	for n.extract(h) {
 	}
-	depSlice := strings.Split(string(out), "\n")
-	rawDeps := depSlice[:len(depSlice)-1] //remove trailing empty string
-	dependencies := removeDuplicates(rawDeps)
-	ch := make(chan message, len(dependencies)-1)
-	for _, rawDep := range rawDeps {
-		go getLicense(rawDep, ch)
+	h.attachLicenseType()
+	for n.reduce() {
 	}
 
-	for i := 0; i < len(rawDeps); i++ {
-		result := <-ch
-		fmt.Printf("%v ===>: %v (%v)\n", result.Dependency, result.License, result.Link)
+	fmt.Println("LICENSED")
+	for _, e := range h.nodes {
+		fmt.Println(strings.Join(e.format(), "\n"))
 	}
+
+	fmt.Println("UNLICENSED")
+	fmt.Println(strings.Join(n.format(), "\n"))
 }
